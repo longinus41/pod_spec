@@ -29,6 +29,19 @@ ASSUME BA == \A b \in Blocks : b \in Block
 (*****************************************************************************************************************************) 
 
 ---------------------------------------------------------------------------- 
+(*Here we define the set Message of all possible messages.*)
+
+PathMessage == [type : {"path_vote"}, sender : ByzQuorum, val : Blocks]
+
+PrefixMessage == [type : {"prefix_vote"}, sender : ByzQuorum, val : Blocks]
+
+BMessage == PathMessage \cup PrefixMessage \* \cup ....
+
+LEMMA BMessageLemma == \A m \in BMessage: /\ (m \in PathMessage) <=> (m.type = "path_vote")
+                                          /\ (m \in PrefixMessage) <=> (m.type = "prefix_vote")
+
+
+---------------------------------------------------------------------------- 
 (*--algorithm PoDCon
     variables localBlocks = [v \in ByzValidator |-> {Genesis}],            \*Local chain 
               beaconChain = [v \in ByzValidator |-> <<Genesis>>],          \*chain that records finalized blocks
@@ -223,5 +236,5 @@ Liveness == \A i \in Validator : /\ <>(Blocks = localBlocks[i])
                                  /\ <>(Blocks = votedPrefix[i]) \*for test
 =============================================================================
 \* Modification History
-\* Last modified Fri Jun 14 17:41:47 CST 2019 by tangzaiyang
+\* Last modified Mon Jun 17 14:35:07 CST 2019 by tangzaiyang
 \* Created Wed Jun 05 14:48:17 CST 2019 by tangzaiyang
