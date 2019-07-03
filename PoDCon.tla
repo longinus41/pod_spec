@@ -16,7 +16,7 @@ INSTANCE Block
 
 (*Validator is the set of honest validators and FakeValidator is the set of malicious or *)
 (*crashed validators.*)
-(*ByzQuorum is the set of n honest validators with f fake validators, where n >= 2f+1.*) 
+(*ByzQuorum is the set of n honest validators with at most f fake validators, where n >= 2f+1.*) 
 (*Each byzantine quorum has 3f+1 validators.*)
 CONSTANTS Validator,                 
           FakeValidator,              
@@ -43,57 +43,54 @@ ASSUME BQA == /\ Validator \cap FakeValidator = {}
 CONSTANTS Blocks
 
 (*Constants input for TLC Model:*)
-(*Blocks <- {[id|->1,parent|->0],[id|->2,parent|->1],[id|->3,parent|->2]}*)
-
-(*Here we define the following record as Genesis block.*)
-Genesis == [id|->1, parent|->0]             
+(*Blocks <- {[id|->1,parent|->0,type|->"normal"],[id|->2,parent|->1,type|->"normal"],[id|->3,parent|->2,type|->"normal"]}*)          
 
 (*Basic assumption abouth blocks that all block id and parent id should be natural number.*)
-ASSUME BA == \A b \in Blocks : b \in Block
+ASSUME \A b \in Blocks : b \in NormalBlock
+----------------------------------------------------------------------------
+(*The length of each epoch*)
+CONSTANT EpochLength
 
+ASSUME EpochLength \in Nat
+(*Constants input for TLC Model:*)
+(*EpochLength <- 3*) 
 ---------------------------------------------------------------------------- 
 (*Here we define the set Message of all possible messages.*)
-(*fr is the finalized round, which is represented by the last finalized block. TBA when there is no finalized one*)
+(*round is the finalized round, which is represented by the last finalized block. TBA when there is no finalized one*)
 
-PathMessage == [type : {"path_vote"}, sender : ByzQuorum, val : Blocks, fr : Nat]
+PathMessage == [type : {"path_vote"}, sender : ByzQuorum, val : Blocks, round : Nat]
 
-PrefixMessage == [type : {"prefix_vote"}, sender : ByzQuorum, val : Blocks, fr : Nat]
+PrefixMessage == [type : {"prefix_vote"}, sender : ByzQuorum, val : Blocks, round : Nat]
 
-BMessage == PathMessage \cup PrefixMessage \* \cup ....
+BlockMessage == [type : {"block_vote"}, sender : ByzQuorum, val : Blocks, round : Nat]
+
+BMessage == PathMessage \cup PrefixMessage \cup BlockMessage
 
 (*The following lemma is the simple fact about these set of messages.*)
 LEMMA BMessageLemma == \A m \in BMessage: /\ (m \in PathMessage) <=> (m.type = "path_vote")
                                           /\ (m \in PrefixMessage) <=> (m.type = "prefix_vote")
 
-
 ---------------------------------------------------------------------------- 
 (*We now give the algorithm.*)
 (*--algorithm PoDCon
-    variables localBlocks = [v \in ByzValidator |-> {Genesis}],            \*Local chain 
-              beaconChain = [v \in ByzValidator |-> <<Genesis>>],          \*chain that records finalized blocks
+
+    variables localBlocks = [v \in ByzValidator |-> {Genesis}],            \*Local blocks 
+              finalizedChain = [v \in ByzValidator |-> <<Genesis>>],          \*chain that records finalized blocks
               votedPath = [v \in ByzValidator |->{}],               \*voted path in the first round
-              prefixPaths = [v \in ByzValidator |->{}],             \*all posible prefix paths of a byzvalidator
+              \*prefixPaths = [v \in ByzValidator |->{}],             \*all posible prefix paths of a byzvalidator
               votedPrefix = [v \in ByzValidator |->{}],             \*voted prefix in the second round
+              votedBlock = [v \in ByzValidator |-> Empty],          \*voted block in the final round
               msgs = {};                                         \*all messages 
     
     define
-    (*Here we need some useful operators, and some of them are defined in Block.tla*)
-        \*IsChain(blocks) 
-        \*IsPath(blocks)   
-        \*Prefix(chains)          
-        \*GetPath(s,t,blocks)                                 
-        \*LongestPath(paths)  
-        
+    (*Here we need some useful operators, and some of them are defined in Block.tla*)       
         (*Get the set of all elements in seq*)
         SeqToSet(seq) == {seq[i] : i \in 1 .. Len(seq) }
         
-        (*True for did not vote the path or any path conflicting before. *)
-        (*The first block of the path should be finalized which means shoule be in the beaconChain*)             
-        DidNotVotePath(v,path) == LET head == HeadBlock(path) 
-                                      finalized_blocks == SeqToSet(beaconChain[v])  
-                                  IN 
-                                      /\ \A b \in path\{head} : b \notin finalized_blocks 
-                                      /\ head \in finalized_blocks                     
+        (*True for did not vote the path or any path conflicting before. TBA*)           
+        DidNotVotePath(v,path) == TRUE\*LET finalized_blocks == SeqToSet(finalizedChain[v])  
+                                  \*IN  \A b \in path : b \notin finalized_blocks 
+                   
     end define;
     
     (*Phase of receiving new blocks*)
@@ -104,13 +101,13 @@ LEMMA BMessageLemma == \A m \in BMessage: /\ (m \in PathMessage) <=> (m.type = "
     
     (*Phase of voting for paht*)    
     macro VoteForPath() begin
-        with s =  beaconChain[self][Len(beaconChain[self])],  \*get the last block in beacon chain as the initiative block
-             t = TailBlock(localBlocks[self]) do              \*get the last block in local blocks as the terminated block                         
+        with s =  finalizedChain[self][Len(finalizedChain[self])],  \*get the last block in beacon chain as the initiative block
+             t = EndBlock(localBlocks[self]) do              \*get the last block in local blocks as the terminated block                         
              if IsPrev(s,t,localBlocks[self]) then            \*IsPrev() will return false if s=t, which means the voted path will have 2 blocks at least
                 with path = GetPath(s,t,localBlocks[self]) do
                     if DidNotVotePath(self,path) then
                         votedPath[self] := path;                   \*empty the set when go to final height vote pathse 
-                        msgs := msgs \cup {[type |-> "path_vote", sender |-> self, val |-> path, fr |-> s.id]};
+                        msgs := msgs \cup {[type |-> "path_vote", sender |-> self, val |-> path, round |-> s.id]};
                     else 
                         skip;
                     end if;
@@ -121,18 +118,35 @@ LEMMA BMessageLemma == \A m \in BMessage: /\ (m \in PathMessage) <=> (m.type = "
         end with;        
     end macro;
     
+    macro VoteForPath1() begin
+        with endBlock = EndBlock(localBlocks[self]) do
+            if GetHeight(endBlock,localBlocks[self]) = EpochLength then         \*TBA here
+                with path = GetBackTrace(endBlock,EpochLength,localBlocks[self]) do
+                    if DidNotVotePath(self,path) then
+                        votedPath[self] := path;
+                        msgs := msgs \cup {[type |-> "path_vote", sender |-> self, val |-> path, round |-> HeadBlock(path).id]};
+                     else
+                        skip;
+                     end if;
+                 end with;
+            else
+                skip;
+            end if;
+        end with; 
+    end macro;
     
-     (*Phase of voting for longest common prefix, TBA*)
+    (*Phase of voting for longest common prefix, TBA*)
     macro VoteForCommonPrefix() begin
         if votedPath[self] /= {} then
-        (*wait until *)
+        (*wait until received paths from at least one byz quorum*)
             await \E Q \in ByzQuorum : /\ \A v \in (Q \cap Validator) : votedPath[v]/={}
-                                       /\ self \in Q;                       \* may not to have this     
+                                       /\ self \in Q;                       \* no need here maybe    
             with quorum_set = {Q \in ByzQuorum : /\ \A v \in (Q \cap Validator): votedPath[v]/={}
                                                  /\ self \in Q} do
                 with all_prefixs = {GetPrefix({votedPath[v] : v \in (q \cap Validator)}) : q \in quorum_set} do         \*get all the prefixs from voted path of honest validators
+                    (*choose the longest prefix for honest validators*)
                     votedPrefix[self] := LongestPath(all_prefixs);
-                    msgs := msgs \cup {[type|-> "prefix_vote", sender |-> self, val |-> votedPrefix[self], fr |-> HeadBlock(votedPrefix[self]).id]} ;               
+                    msgs := msgs \cup {[type|-> "prefix_vote", sender |-> self, val |-> votedPrefix[self], round |-> HeadBlock(votedPrefix[self]).id]} ;               
                 end with;
             end with;
          else 
@@ -142,7 +156,13 @@ LEMMA BMessageLemma == \A m \in BMessage: /\ (m \in PathMessage) <=> (m.type = "
         
     macro PhaseFinalHeightVote() begin
         if votedPath[self] /={} /\ votedPrefix[self] /={} then
-            localBlocks[self] := AddBlocks(votedPrefix[self],localBlocks[self])
+        (*wait until received prefixs from at least one byz quorum*)
+            await \E Q \in ByzQuorum : /\ \A v \in (Q \cap Validator) : votedPrefix[v]/={}
+                                       /\ self \in Q; 
+            with prefix_set = {votedPrefix[v] : v \in ByzValidator } do
+                 votedBlock[self]:= TailBlock(LongestPath(prefix_set)); 
+                 msgs := msgs \cup {[type|-> "block_vote", sender |-> self, val |-> votedBlock[self], round |-> HeadBlock(votedPrefix[self]).id]};              
+            end with
         else
             skip;
         end if;
@@ -161,12 +181,11 @@ LEMMA BMessageLemma == \A m \in BMessage: /\ (m \in PathMessage) <=> (m.type = "
                   ReceiveNewBlock();
               or
                   VoteForPath();
+                  \*VoteForPath1();
               or
                   VoteForCommonPrefix();
-              \*or
-                  \*PhaseFinalHeightVote();
-            \*or
-              \*  skip;
+              or
+                  PhaseFinalHeightVote();
             end either;
     end while;
     \*skip;
@@ -183,47 +202,43 @@ LEMMA BMessageLemma == \A m \in BMessage: /\ (m \in PathMessage) <=> (m.type = "
 
 end algorithm;*)
 \* BEGIN TRANSLATION
-VARIABLES localBlocks, beaconChain, votedPath, prefixPaths, votedPrefix, msgs
+VARIABLES localBlocks, finalizedChain, votedPath, votedPrefix, votedBlock, 
+          msgs
 
 (* define statement *)
 SeqToSet(seq) == {seq[i] : i \in 1 .. Len(seq) }
 
 
-
-DidNotVotePath(v,path) == LET head == HeadBlock(path)
-                              finalized_blocks == SeqToSet(beaconChain[v])
-                          IN
-                              /\ \A b \in path\{head} : b \notin finalized_blocks
-                              /\ head \in finalized_blocks
+DidNotVotePath(v,path) == TRUE
 
 
-vars == << localBlocks, beaconChain, votedPath, prefixPaths, votedPrefix, 
+vars == << localBlocks, finalizedChain, votedPath, votedPrefix, votedBlock, 
            msgs >>
 
 ProcSet == (Validator) \cup (FakeValidator)
 
 Init == (* Global variables *)
         /\ localBlocks = [v \in ByzValidator |-> {Genesis}]
-        /\ beaconChain = [v \in ByzValidator |-> <<Genesis>>]
+        /\ finalizedChain = [v \in ByzValidator |-> <<Genesis>>]
         /\ votedPath = [v \in ByzValidator |->{}]
-        /\ prefixPaths = [v \in ByzValidator |->{}]
         /\ votedPrefix = [v \in ByzValidator |->{}]
+        /\ votedBlock = [v \in ByzValidator |-> Empty]
         /\ msgs = {}
 
 v(self) == /\ \/ /\ localBlocks' = [localBlocks EXCEPT ![self] = AddBlocks(Blocks,localBlocks[self])]
-                 /\ UNCHANGED <<votedPath, votedPrefix, msgs>>
-              \/ /\ LET s == beaconChain[self][Len(beaconChain[self])] IN
-                      LET t == TailBlock(localBlocks[self]) IN
+                 /\ UNCHANGED <<votedPath, votedPrefix, votedBlock, msgs>>
+              \/ /\ LET s == finalizedChain[self][Len(finalizedChain[self])] IN
+                      LET t == EndBlock(localBlocks[self]) IN
                         IF IsPrev(s,t,localBlocks[self])
                            THEN /\ LET path == GetPath(s,t,localBlocks[self]) IN
                                      IF DidNotVotePath(self,path)
                                         THEN /\ votedPath' = [votedPath EXCEPT ![self] = path]
-                                             /\ msgs' = (msgs \cup {[type |-> "path_vote", sender |-> self, val |-> path, fr |-> s.id]})
+                                             /\ msgs' = (msgs \cup {[type |-> "path_vote", sender |-> self, val |-> path, round |-> s.id]})
                                         ELSE /\ TRUE
                                              /\ UNCHANGED << votedPath, msgs >>
                            ELSE /\ TRUE
                                 /\ UNCHANGED << votedPath, msgs >>
-                 /\ UNCHANGED <<localBlocks, votedPrefix>>
+                 /\ UNCHANGED <<localBlocks, votedPrefix, votedBlock>>
               \/ /\ IF votedPath[self] /= {}
                        THEN /\ \E Q \in ByzQuorum : /\ \A v \in (Q \cap Validator) : votedPath[v]/={}
                                                     /\ self \in Q
@@ -231,15 +246,24 @@ v(self) == /\ \/ /\ localBlocks' = [localBlocks EXCEPT ![self] = AddBlocks(Block
                                                                     /\ self \in Q} IN
                                  LET all_prefixs == {GetPrefix({votedPath[v] : v \in (q \cap Validator)}) : q \in quorum_set} IN
                                    /\ votedPrefix' = [votedPrefix EXCEPT ![self] = LongestPath(all_prefixs)]
-                                   /\ msgs' = (msgs \cup {[type|-> "prefix_vote", sender |-> self, val |-> votedPrefix'[self], fr |-> HeadBlock(votedPrefix'[self]).id]})
+                                   /\ msgs' = (msgs \cup {[type|-> "prefix_vote", sender |-> self, val |-> votedPrefix'[self], round |-> HeadBlock(votedPrefix'[self]).id]})
                        ELSE /\ TRUE
                             /\ UNCHANGED << votedPrefix, msgs >>
-                 /\ UNCHANGED <<localBlocks, votedPath>>
-           /\ UNCHANGED << beaconChain, prefixPaths >>
+                 /\ UNCHANGED <<localBlocks, votedPath, votedBlock>>
+              \/ /\ IF votedPath[self] /={} /\ votedPrefix[self] /={}
+                       THEN /\ \E Q \in ByzQuorum : /\ \A v \in (Q \cap Validator) : votedPrefix[v]/={}
+                                                    /\ self \in Q
+                            /\ LET prefix_set == {votedPrefix[v] : v \in ByzValidator } IN
+                                 /\ votedBlock' = [votedBlock EXCEPT ![self] = TailBlock(LongestPath(prefix_set))]
+                                 /\ msgs' = (msgs \cup {[type|-> "block_vote", sender |-> self, val |-> votedBlock'[self], round |-> HeadBlock(votedPrefix[self]).id]})
+                       ELSE /\ TRUE
+                            /\ UNCHANGED << votedBlock, msgs >>
+                 /\ UNCHANGED <<localBlocks, votedPath, votedPrefix>>
+           /\ UNCHANGED finalizedChain
 
 fv(self) == /\ TRUE
-            /\ UNCHANGED << localBlocks, beaconChain, votedPath, prefixPaths, 
-                            votedPrefix, msgs >>
+            /\ UNCHANGED << localBlocks, finalizedChain, votedPath, 
+                            votedPrefix, votedBlock, msgs >>
 
 Next == (\E self \in Validator: v(self))
            \/ (\E self \in FakeValidator: fv(self))
@@ -251,12 +275,14 @@ Spec == /\ Init /\ [][Next]_vars
 
 ---------------------------------------------------------------------------- 
 (*************************Invariants*****************************)
-ChainCorrectness ==  \A i \in Validator : /\ localBlocks[i] \subseteq Blocks
+ChainCorrectness ==  \A i \in Validator : /\ localBlocks[i] \subseteq Block
                                           /\ votedPath[i] \subseteq Blocks 
                                             \*/\ prefixPaths[i] \subseteq Blocks 
                                             
 GenesisInvariants == \A i \in ByzValidator : /\ Genesis \in localBlocks[i]
-                                             /\ Genesis = beaconChain[i][1]
+                                             /\ Genesis = finalizedChain[i][1]
+
+
 
 
 (*************************Properties*****************************)
@@ -265,5 +291,5 @@ Liveness == \A i \in Validator : /\ <>(Blocks = localBlocks[i])
                                  /\ <>(Blocks = votedPrefix[i]) \*for test
 =============================================================================
 \* Modification History
-\* Last modified Tue Jun 18 11:54:50 CST 2019 by tangzaiyang
+\* Last modified Wed Jul 03 11:58:09 CST 2019 by tangzaiyang
 \* Created Wed Jun 05 14:48:17 CST 2019 by tangzaiyang
